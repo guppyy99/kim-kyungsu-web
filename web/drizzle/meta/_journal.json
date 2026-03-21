@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1773933590585,
+      "tag": "0000_damp_jubilee",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1773933676781,
+      "tag": "0001_far_wong",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1773934533823,
+      "tag": "0002_powerful_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1773963853060,
+      "tag": "0003_gigantic_molten_man",
+      "breakpoints": true
+    }
+  ]
+}
