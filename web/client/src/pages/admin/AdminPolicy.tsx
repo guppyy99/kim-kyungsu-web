@@ -91,7 +91,7 @@ export default function AdminPolicy() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { toast.error("파일 크기는 10MB 이하여야 합니다."); return; }
+    if (file.size > 4 * 1024 * 1024) { toast.error("파일 크기는 4MB 이하여야 합니다."); return; }
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = (reader.result as string).split(",")[1];
@@ -197,7 +197,7 @@ export default function AdminPolicy() {
           {/* 파일 첨부 */}
           {editId === null && (
             <div>
-              <label className="text-xs font-medium mb-1 block" style={{ color: "#64748B" }}>파일 첨부 (PDF, 이미지 등, 최대 10MB)</label>
+              <label className="text-xs font-medium mb-1 block" style={{ color: "#64748B" }}>파일 첨부 (PDF, 이미지 등, 최대 4MB)</label>
               <label
                 className="flex items-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed cursor-pointer text-xs"
                 style={{ borderColor: "#DDD6FE", color: "#6D28D9" }}

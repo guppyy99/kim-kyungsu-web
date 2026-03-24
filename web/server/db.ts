@@ -1,92 +1,86 @@
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { ENV } from './_core/env';
 
-let _db: ReturnType<typeof drizzle> | null = null;
+let _sb: SupabaseClient | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
+/**
+ * Supabase 클라이언트 반환 (REST API 기반)
+ * PostgreSQL pooler 연결 대신 Supabase REST API 사용
+ */
+export function getSupabase(): SupabaseClient | null {
+  if (!_sb) {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_ANON_KEY;
+    if (!url || !key) {
+      console.warn("[Database] SUPABASE_URL 또는 SUPABASE_ANON_KEY 미설정");
+      return null;
     }
+    _sb = createClient(url, key);
   }
-  return _db;
+  return _sb;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
+// 기존 Drizzle 호환 별칭 — 라우터에서 null 체크용
+export async function getDb() {
+  return getSupabase();
+}
 
-  const db = await getDb();
-  if (!db) {
+export async function upsertUser(user: {
+  openId: string;
+  name?: string | null;
+  email?: string | null;
+  loginMethod?: string | null;
+  role?: string;
+  lastSignedIn?: Date;
+}): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) {
     console.warn("[Database] Cannot upsert user: database not available");
     return;
   }
 
-  try {
-    const values: InsertUser = {
+  const now = new Date().toISOString();
+  const role = user.role ?? (user.openId === ENV.ownerOpenId ? 'admin' : 'user');
+
+  // Check if user exists
+  const { data: existing } = await sb
+    .from("users")
+    .select("id")
+    .eq("openId", user.openId)
+    .limit(1)
+    .single();
+
+  if (!existing) {
+    await sb.from("users").insert({
       openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
+      name: user.name ?? null,
+      email: user.email ?? null,
+      loginMethod: user.loginMethod ?? null,
+      role,
+      lastSignedIn: user.lastSignedIn?.toISOString() ?? now,
     });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
+  } else {
+    const updateSet: Record<string, unknown> = { lastSignedIn: user.lastSignedIn?.toISOString() ?? now };
+    if (user.name !== undefined) updateSet.name = user.name;
+    if (user.email !== undefined) updateSet.email = user.email;
+    if (user.loginMethod !== undefined) updateSet.loginMethod = user.loginMethod;
+    if (user.role !== undefined) updateSet.role = user.role;
+    else if (user.openId === ENV.ownerOpenId) updateSet.role = 'admin';
+
+    await sb.from("users").update(updateSet).eq("openId", user.openId);
   }
 }
 
 export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
+  const sb = getSupabase();
+  if (!sb) return undefined;
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  const { data } = await sb
+    .from("users")
+    .select("*")
+    .eq("openId", openId)
+    .limit(1)
+    .single();
 
-  return result.length > 0 ? result[0] : undefined;
+  return data ?? undefined;
 }
-
-// TODO: add feature queries here as your schema grows.

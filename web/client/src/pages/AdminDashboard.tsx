@@ -118,12 +118,12 @@ export default function AdminDashboard() {
   }
 
   const statCards = [
-    { label: "공지사항", value: stats?.announcements ?? 0, icon: Bell, color: "#1D4ED8", bg: "#EFF6FF" },
-    { label: "일정", value: stats?.schedules ?? 0, icon: Calendar, color: "#065F46", bg: "#ECFDF5" },
-    { label: "도민 제안", value: stats?.proposals ?? 0, icon: MessageSquare, color: "#B45309", bg: "#FFFBEB" },
-    { label: "정책 자료", value: stats?.policyDocs ?? 0, icon: BookOpen, color: "#6D28D9", bg: "#F5F3FF" },
-    { label: "공약", value: stats?.pledges ?? 0, icon: MapPin, color: "#DC2626", bg: "#FEF2F2" },
-    { label: "가입 사용자", value: stats?.users ?? 0, icon: Users, color: "#0369A1", bg: "#F0F9FF" },
+    { label: "공지사항", value: stats?.announcements ?? 0, icon: Bell, color: "#1D4ED8", bg: "#EFF6FF", path: "/admin/announcements" },
+    { label: "일정", value: stats?.schedules ?? 0, icon: Calendar, color: "#065F46", bg: "#ECFDF5", path: "/admin/schedules" },
+    { label: "도민 제안", value: stats?.proposals ?? 0, icon: MessageSquare, color: "#B45309", bg: "#FFFBEB", path: "/admin/proposals" },
+    { label: "정책 자료", value: stats?.policyDocs ?? 0, icon: BookOpen, color: "#6D28D9", bg: "#F5F3FF", path: "/admin/policy" },
+    { label: "공약", value: stats?.pledges ?? 0, icon: MapPin, color: "#DC2626", bg: "#FEF2F2", path: "/admin/pledges" },
+    { label: "가입 사용자", value: stats?.users ?? 0, icon: Users, color: "#0369A1", bg: "#F0F9FF", path: "" },
   ];
 
   const proposalStatusColors: Record<string, string> = {
@@ -163,12 +163,13 @@ export default function AdminDashboard() {
             return (
               <div
                 key={card.label}
-                className="rounded-xl p-4 flex flex-col gap-2"
+                className={`rounded-xl p-4 flex flex-col gap-2${card.path ? " cursor-pointer transition-shadow hover:shadow-md" : ""}`}
                 style={{
                   background: card.bg,
                   border: `1px solid ${card.color}20`,
                   boxShadow: "0 1px 4px rgba(0,0,0,0.05)",
                 }}
+                onClick={() => card.path && navigate(card.path)}
               >
                 <div
                   className="w-8 h-8 rounded-lg flex items-center justify-center"

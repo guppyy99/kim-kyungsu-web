@@ -30,11 +30,12 @@ const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserI
 
 class OAuthService {
   constructor(private client: ReturnType<typeof axios.create>) {
-    console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
-    if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable."
-      );
+    if (ENV.oAuthServerUrl) {
+      console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
+    } else if (ENV.isProduction) {
+      console.error("[OAuth] ERROR: OAUTH_SERVER_URL is not configured!");
+    } else {
+      console.log("[OAuth] OAuth 미설정 — 개발 모드에서는 /api/dev/login 사용");
     }
   }
 
@@ -201,7 +202,6 @@ class SDKServer {
     cookieValue: string | undefined | null
   ): Promise<{ openId: string; appId: string; name: string } | null> {
     if (!cookieValue) {
-      console.warn("[Auth] Missing session cookie");
       return null;
     }
 
@@ -217,7 +217,7 @@ class SDKServer {
         !isNonEmptyString(appId) ||
         !isNonEmptyString(name)
       ) {
-        console.warn("[Auth] Session payload missing required fields");
+        console.warn("[Auth] 세션 payload에 필수 필드 누락");
         return null;
       }
 
@@ -227,7 +227,7 @@ class SDKServer {
         name,
       };
     } catch (error) {
-      console.warn("[Auth] Session verification failed", String(error));
+      // JWT 만료 등 정상적인 실패는 로깅하지 않음
       return null;
     }
   }

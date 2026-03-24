@@ -3,11 +3,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* 
- * Design: 라이트 메인 + 블루 사이드바
- * 경남도지사 김경수 후보 노션 스타일 홈페이지
- * 메인 콘텐츠: 밝은 화이트/라이트 그레이
- * 사이드바/헤더: 딥 블루 (#1E3A5F 계열)
+/*
+ * Design System: Civic Premium
+ * 경남도지사 김경수 후보 디지털 상황실
+ * Navy authority (#0C1E3A) + Blue action (#2563EB) + Amber urgency (#F59E0B)
+ * Pretendard 한국어 최적화 타이포그래피
  */
 
 @theme inline {
@@ -50,41 +50,39 @@
 }
 
 :root {
-  --radius: 0.5rem;
-  /* Light theme for main content */
-  --background: oklch(0.97 0.005 240);
-  --foreground: oklch(0.2 0.02 240);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.02 240);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.02 240);
-  --primary: oklch(0.42 0.18 240);
-  --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.93 0.01 240);
-  --secondary-foreground: oklch(0.3 0.02 240);
-  --muted: oklch(0.93 0.01 240);
-  --muted-foreground: oklch(0.55 0.02 240);
-  --accent: oklch(0.93 0.01 240);
-  --accent-foreground: oklch(0.2 0.02 240);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.88 0.01 240);
-  --input: oklch(0.88 0.01 240);
-  --ring: oklch(0.42 0.18 240);
-  --chart-1: oklch(0.42 0.18 240);
-  --chart-2: oklch(0.55 0.15 200);
-  --chart-3: oklch(0.6 0.15 160);
-  --chart-4: oklch(0.65 0.15 120);
-  --chart-5: oklch(0.6 0.2 30);
-  /* Sidebar: deep blue */
-  --sidebar: oklch(0.25 0.1 240);
-  --sidebar-foreground: oklch(0.92 0.02 220);
-  --sidebar-primary: oklch(0.65 0.18 195);
-  --sidebar-primary-foreground: oklch(0.1 0.02 240);
-  --sidebar-accent: oklch(1 0 0 / 8%);
-  --sidebar-accent-foreground: oklch(0.95 0.01 220);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.65 0.18 195);
+  --radius: 0.625rem;
+  --background: #FFFFFF;
+  --foreground: #0C1E3A;
+  --card: #FFFFFF;
+  --card-foreground: #0C1E3A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0C1E3A;
+  --primary: #2563EB;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F8FAFC;
+  --secondary-foreground: #334155;
+  --muted: #F1F5F9;
+  --muted-foreground: #64748B;
+  --accent: #F1F5F9;
+  --accent-foreground: #0C1E3A;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #2563EB;
+  --chart-1: #2563EB;
+  --chart-2: #3B82F6;
+  --chart-3: #60A5FA;
+  --chart-4: #93C5FD;
+  --chart-5: #BFDBFE;
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #334155;
+  --sidebar-primary: #2563EB;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F1F5F9;
+  --sidebar-accent-foreground: #0C1E3A;
+  --sidebar-border: #F1F5F9;
+  --sidebar-ring: #2563EB;
 }
 
 @layer base {
@@ -93,7 +91,11 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Noto Sans KR', 'Pretendard', sans-serif;
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'ss01' on, 'cv01' on;
+    letter-spacing: -0.01em;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -137,22 +139,158 @@
     }
   }
 
-  /* Live badge animation */
+  /* ── Live pulse ── */
   .live-badge {
-    animation: pulse-live 2s infinite;
+    animation: pulse-live 2s ease-in-out infinite;
   }
-
   @keyframes pulse-live {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
+    50% { opacity: 0.5; }
   }
 
-  /* Card hover effect */
-  .notion-card {
-    transition: all 0.18s ease;
+  /* ── Card system ── */
+  .card-elevated {
+    background: #FFFFFF;
+    border-radius: 14px;
+    box-shadow: 0 1px 3px rgba(12, 30, 58, 0.04), 0 1px 2px rgba(12, 30, 58, 0.02);
+    transition: box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .notion-card:hover {
+  .card-elevated:hover {
+    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.08), 0 2px 8px rgba(12, 30, 58, 0.04);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px oklch(0.42 0.18 240 / 12%);
+  }
+
+  .card-flat {
+    background: #FFFFFF;
+    border: 1px solid #EEF2F6;
+    border-radius: 14px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .card-flat:hover {
+    border-color: #DBEAFE;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.06);
+  }
+
+  /* ── Sidebar nav (dark background) ── */
+  .sidebar-nav-item {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* ── Mobile bottom nav ── */
+  .bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .bottom-nav-item {
+    transition: color 0.15s ease, transform 0.1s ease;
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+  }
+  .bottom-nav-item:active {
+    transform: scale(0.9);
+  }
+
+  .has-bottom-nav {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ── D-Day badge ── */
+  .dday-badge {
+    background: linear-gradient(135deg, #1E40AF 0%, #2563EB 100%);
+    color: #FFFFFF;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+  }
+
+  /* ── Stagger entrance animations ── */
+  .stagger-in > * {
+    opacity: 0;
+    transform: translateY(12px);
+    animation: stagger-fade-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  .stagger-in > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-in > *:nth-child(2) { animation-delay: 60ms; }
+  .stagger-in > *:nth-child(3) { animation-delay: 120ms; }
+  .stagger-in > *:nth-child(4) { animation-delay: 180ms; }
+  .stagger-in > *:nth-child(5) { animation-delay: 240ms; }
+  .stagger-in > *:nth-child(6) { animation-delay: 300ms; }
+  .stagger-in > *:nth-child(7) { animation-delay: 360ms; }
+  .stagger-in > *:nth-child(8) { animation-delay: 420ms; }
+
+  @keyframes stagger-fade-in {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* ── Hero shimmer ── */
+  .hero-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      105deg,
+      transparent 40%,
+      rgba(255,255,255,0.03) 45%,
+      rgba(255,255,255,0.06) 50%,
+      rgba(255,255,255,0.03) 55%,
+      transparent 60%
+    );
+    animation: shimmer 8s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    0%, 100% { transform: translateX(-100%); }
+    50% { transform: translateX(100%); }
+  }
+
+  /* ── Section header ── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ── Subtle content background ── */
+  .content-bg {
+    background-color: #F8FAFB;
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(37, 99, 235, 0.015) 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+
+  /* ── Scrollbar ── */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #E2E8F0;
+    border-radius: 2px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #CBD5E1;
+  }
+
+  /* ── Stat number styling (Pretendard native) ── */
+  .stat-num {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    font-feature-settings: 'tnum' on, 'cv01' on;
+  }
+
+  /* ── Quick link interaction ── */
+  .quick-link {
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .quick-link:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.1), 0 2px 6px rgba(12, 30, 58, 0.04);
+  }
+  .quick-link:active {
+    transform: translateY(0px) scale(0.98);
   }
 }

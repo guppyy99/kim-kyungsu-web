@@ -3,20 +3,9 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { storagePut } from "./storage";
-import { getDb } from "./db";
-import {
-  uploadedFiles,
-  announcements,
-  schedules,
-  citizenProposals,
-  policyDocs,
-  pledges,
-  users,
-  adminAccounts,
-} from "../drizzle/schema";
+import { getSupabase } from "./db";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { SignJWT } from "jose";
-import { eq, desc, count } from "drizzle-orm";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { notifyOwner } from "./_core/notification";
@@ -47,13 +36,12 @@ export const appRouter = router({
       return { success: true } as const;
     }),
 
-    // 관리자 아이디/비밀번호 로그인
     adminLogin: publicProcedure
       .input(z.object({ username: z.string().min(1), password: z.string().min(1) }))
       .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        const [account] = await db.select().from(adminAccounts).where(eq(adminAccounts.username, input.username)).limit(1);
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        const { data: account } = await sb.from("admin_accounts").select("*").eq("username", input.username).limit(1).single();
         if (!account || !checkPasswordHash(input.password, account.passwordHash)) {
           throw new Error("아이디 또는 비밀번호가 올바르지 않습니다.");
         }
@@ -63,18 +51,17 @@ export const appRouter = router({
           .setProtectedHeader({ alg: "HS256", typ: "JWT" })
           .setExpirationTime(Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365)
           .sign(secret);
-        const existingUser = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-        if (existingUser.length === 0) {
-          await db.insert(users).values({ openId, name: account.displayName ?? account.username, loginMethod: "admin", role: "admin", lastSignedIn: new Date() });
+        const { data: existingUser } = await sb.from("users").select("id").eq("openId", openId).limit(1).single();
+        if (!existingUser) {
+          await sb.from("users").insert({ openId, name: account.displayName ?? account.username, loginMethod: "admin", role: "admin", lastSignedIn: new Date().toISOString() });
         } else {
-          await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.openId, openId));
+          await sb.from("users").update({ lastSignedIn: new Date().toISOString() }).eq("openId", openId);
         }
         const cookieOptions = getSessionCookieOptions(ctx.req);
         ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: 1000 * 60 * 60 * 24 * 365 });
         return { success: true, username: account.username, displayName: account.displayName };
       }),
 
-    // 관리자 계정 정보 수정 (아이디/비밀번호/표시이름)
     updateAdminAccount: adminProcedure
       .input(z.object({
         currentPassword: z.string().min(1),
@@ -83,30 +70,29 @@ export const appRouter = router({
         newDisplayName: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const currentOpenId = ctx.user?.openId ?? "";
         const currentUsername = currentOpenId.startsWith("admin:") ? currentOpenId.slice(6) : null;
         if (!currentUsername) throw new Error("관리자 계정이 아닙니다.");
-        const [account] = await db.select().from(adminAccounts).where(eq(adminAccounts.username, currentUsername)).limit(1);
+        const { data: account } = await sb.from("admin_accounts").select("*").eq("username", currentUsername).limit(1).single();
         if (!account) throw new Error("계정을 찾을 수 없습니다.");
         if (!checkPasswordHash(input.currentPassword, account.passwordHash)) throw new Error("현재 비밀번호가 올바르지 않습니다.");
         const updateData: Record<string, string> = {};
         if (input.newPassword) updateData.passwordHash = encodePasswordHash(input.newPassword);
         if (input.newDisplayName !== undefined) updateData.displayName = input.newDisplayName;
         if (input.newUsername) {
-          const [dup] = await db.select().from(adminAccounts).where(eq(adminAccounts.username, input.newUsername)).limit(1);
+          const { data: dup } = await sb.from("admin_accounts").select("id").eq("username", input.newUsername).limit(1).single();
           if (dup && dup.id !== account.id) throw new Error("이미 사용 중인 아이디입니다.");
           updateData.username = input.newUsername;
         }
         if (Object.keys(updateData).length > 0) {
-          await db.update(adminAccounts).set(updateData).where(eq(adminAccounts.id, account.id));
-          if (input.newDisplayName !== undefined) await db.update(users).set({ name: input.newDisplayName }).where(eq(users.openId, currentOpenId));
+          await sb.from("admin_accounts").update(updateData).eq("id", account.id);
+          if (input.newDisplayName !== undefined) await sb.from("users").update({ name: input.newDisplayName }).eq("openId", currentOpenId);
         }
         return { success: true };
       }),
 
-    // 최초 관리자 계정 생성 (계정이 없을 때만)
     setupAdmin: publicProcedure
       .input(z.object({
         username: z.string().min(3).max(64),
@@ -115,200 +101,155 @@ export const appRouter = router({
         setupKey: z.string(),
       }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        const [existing] = await db.select({ id: adminAccounts.id }).from(adminAccounts).limit(1);
-        if (existing) throw new Error("관리자 계정이 이미 존재합니다. 로그인하여 정보를 수정하세요.");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        const { data: existing } = await sb.from("admin_accounts").select("id").limit(1).single();
+        if (existing) throw new Error("관리자 계정이 이미 존재합니다.");
         const validKey = process.env.ADMIN_SETUP_KEY ?? "kimkyungsu2026!";
         if (input.setupKey !== validKey) throw new Error("설정 키가 올바르지 않습니다.");
-        await db.insert(adminAccounts).values({ username: input.username, passwordHash: encodePasswordHash(input.password), displayName: input.displayName ?? input.username });
+        await sb.from("admin_accounts").insert({ username: input.username, passwordHash: encodePasswordHash(input.password), displayName: input.displayName ?? input.username });
         return { success: true };
       }),
 
-    // 관리자 계정 존재 여부 확인 (public)
     hasAdmin: publicProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) return false;
-      const [existing] = await db.select({ id: adminAccounts.id }).from(adminAccounts).limit(1);
-      return !!existing;
+      const sb = getSupabase();
+      if (!sb) return false;
+      const { data } = await sb.from("admin_accounts").select("id").limit(1).single();
+      return !!data;
     }),
   }),
 
-  // ─── 파일 업로드 ───────────────────────────────────────────────────────────
   files: router({
-    /**
-     * Base64 인코딩된 파일을 받아 S3에 업로드하고 메타데이터를 DB에 저장
-     */
     upload: protectedProcedure
-      .input(
-        z.object({
-          fileName: z.string().min(1),
-          mimeType: z.string().default("application/octet-stream"),
-          fileSize: z.number().optional(),
-          base64Data: z.string().min(1),
-          category: z.enum(["policy", "press", "card", "pledge", "other"]).default("other"),
-        })
-      )
+      .input(z.object({
+        fileName: z.string().min(1),
+        mimeType: z.string().default("application/octet-stream"),
+        fileSize: z.number().optional(),
+        base64Data: z.string().min(1),
+        category: z.enum(["policy", "press", "card", "pledge", "other"]).default("other"),
+      }))
       .mutation(async ({ input, ctx }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-
-        // base64 → Buffer
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const buffer = Buffer.from(input.base64Data, "base64");
         const suffix = nanoid(8);
         const ext = input.fileName.split(".").pop() ?? "bin";
         const fileKey = `kimkyungsu/${input.category}/${nanoid(12)}-${suffix}.${ext}`;
-
         const { url } = await storagePut(fileKey, buffer, input.mimeType);
-
-        await db.insert(uploadedFiles).values({
-          fileName: input.fileName,
-          fileKey,
-          fileUrl: url,
-          mimeType: input.mimeType,
-          fileSize: input.fileSize,
-          category: input.category,
-          uploadedBy: ctx.user.id,
+        await sb.from("uploaded_files").insert({
+          fileName: input.fileName, fileKey, fileUrl: url, mimeType: input.mimeType,
+          fileSize: input.fileSize, category: input.category, uploadedBy: ctx.user.id,
         });
-
         return { url, fileKey, fileName: input.fileName };
       }),
 
     list: protectedProcedure
       .input(z.object({ category: z.enum(["policy", "press", "card", "pledge", "other"]).optional() }))
       .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const rows = await db
-          .select()
-          .from(uploadedFiles)
-          .orderBy(desc(uploadedFiles.createdAt));
-        if (input.category) return rows.filter(r => r.category === input.category);
-        return rows;
+        const sb = getSupabase();
+        if (!sb) return [];
+        let q = sb.from("uploaded_files").select("*").order("createdAt", { ascending: false });
+        if (input.category) q = q.eq("category", input.category);
+        const { data } = await q;
+        return data ?? [];
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.delete(uploadedFiles).where(eq(uploadedFiles.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("uploaded_files").delete().eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 공지사항 ──────────────────────────────────────────────────────────────
   announcements: router({
     list: publicProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) return [];
-      return db.select().from(announcements).orderBy(desc(announcements.publishedAt));
+      const sb = getSupabase();
+      if (!sb) return [];
+      const { data } = await sb.from("announcements").select("*").order("publishedAt", { ascending: false });
+      return data ?? [];
     }),
 
     create: protectedProcedure
-      .input(
-        z.object({
-          type: z.enum(["공지", "보도", "일정"]),
-          title: z.string().min(1),
-          content: z.string().optional(),
-          isNew: z.boolean().default(true),
-        })
-      )
+      .input(z.object({ type: z.enum(["공지", "보도", "일정"]), title: z.string().min(1), content: z.string().optional(), isNew: z.boolean().default(true) }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.insert(announcements).values({ ...input });
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("announcements").insert(input);
         return { success: true };
       }),
 
     getById: publicProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return null;
-        const [item] = await db.select().from(announcements).where(eq(announcements.id, input.id)).limit(1);
-        return item ?? null;
+        const sb = getSupabase();
+        if (!sb) return null;
+        const { data } = await sb.from("announcements").select("*").eq("id", input.id).limit(1).single();
+        return data ?? null;
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.delete(announcements).where(eq(announcements.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("announcements").delete().eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 일정 ─────────────────────────────────────────────────────────────────
   schedules: router({
     list: publicProcedure
       .input(z.object({ date: z.string().optional() }))
       .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const rows = await db.select().from(schedules).orderBy(schedules.scheduleDate, schedules.time);
-        if (input.date) return rows.filter(r => r.scheduleDate === input.date);
-        return rows;
+        const sb = getSupabase();
+        if (!sb) return [];
+        let q = sb.from("schedules").select("*").order("scheduleDate").order("time");
+        if (input.date) q = q.eq("scheduleDate", input.date);
+        const { data } = await q;
+        return data ?? [];
       }),
 
     create: protectedProcedure
-      .input(
-        z.object({
-          scheduleDate: z.string(),
-          time: z.string(),
-          label: z.enum(["이동", "행사", "현장", "내부", "회의"]),
-          title: z.string().min(1),
-          isCurrent: z.boolean().default(false),
-        })
-      )
+      .input(z.object({ scheduleDate: z.string(), time: z.string(), label: z.enum(["이동", "행사", "현장", "내부", "회의"]), title: z.string().min(1), isCurrent: z.boolean().default(false) }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.insert(schedules).values({ ...input });
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("schedules").insert(input);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.delete(schedules).where(eq(schedules.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("schedules").delete().eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 도민 제안 ─────────────────────────────────────────────────────────────
   proposals: router({
     list: publicProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) return [];
-      return db.select().from(citizenProposals).orderBy(desc(citizenProposals.createdAt));
+      const sb = getSupabase();
+      if (!sb) return [];
+      const { data } = await sb.from("citizen_proposals").select("*").order("createdAt", { ascending: false });
+      return data ?? [];
     }),
 
     submit: publicProcedure
-      .input(
-        z.object({
-          name: z.string().min(1),
-          region: z.string().optional(),
-          category: z.string().optional(),
-          title: z.string().min(1),
-          content: z.string().min(1),
-          // 첨부파일 (선택)
-          attachmentBase64: z.string().optional(),
-          attachmentFileName: z.string().optional(),
-          attachmentMimeType: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        name: z.string().min(1), region: z.string().optional(), category: z.string().optional(),
+        title: z.string().min(1), content: z.string().min(1),
+        attachmentBase64: z.string().optional(), attachmentFileName: z.string().optional(), attachmentMimeType: z.string().optional(),
+      }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         let attachmentUrl: string | undefined;
         let attachmentKey: string | undefined;
-
-        // 첨부파일이 있으면 S3에 업로드
         if (input.attachmentBase64 && input.attachmentFileName) {
           const buffer = Buffer.from(input.attachmentBase64, "base64");
           const ext = input.attachmentFileName.split(".").pop() ?? "bin";
@@ -317,473 +258,271 @@ export const appRouter = router({
           attachmentUrl = result.url;
           attachmentKey = result.key;
         }
-
-        await db.insert(citizenProposals).values({
-          name: input.name,
-          region: input.region,
-          category: input.category,
-          title: input.title,
-          content: input.content,
-          attachmentUrl,
-          attachmentKey,
-          attachmentName: input.attachmentFileName,
+        await sb.from("citizen_proposals").insert({
+          name: input.name, region: input.region, category: input.category,
+          title: input.title, content: input.content,
+          attachmentUrl, attachmentKey, attachmentName: input.attachmentFileName,
         });
-
-        // 오너에게 알림
-        await notifyOwner({
-          title: `새 도민 제안: ${input.title}`,
-          content: `${input.name} (${input.region ?? "지역 미입력"}) - ${input.title}`,
-        }).catch(() => {});
-
+        await notifyOwner({ title: `새 도민 제안: ${input.title}`, content: `${input.name} (${input.region ?? "지역 미입력"}) - ${input.title}` }).catch(() => {});
         return { success: true };
       }),
 
     updateStatus: protectedProcedure
-      .input(
-        z.object({
-          id: z.number(),
-          status: z.enum(["접수", "검토중", "반영", "보류"]),
-        })
-      )
+      .input(z.object({ id: z.number(), status: z.enum(["접수", "검토중", "반영", "보류"]) }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db
-          .update(citizenProposals)
-          .set({ status: input.status })
-          .where(eq(citizenProposals.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("citizen_proposals").update({ status: input.status }).eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 정책 자료 ─────────────────────────────────────────────────────────────
   policyDocs: router({
     list: publicProcedure
       .input(z.object({ category: z.enum(["심층리포트", "보도자료", "카드뉴스"]).optional() }))
       .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const rows = await db.select().from(policyDocs).orderBy(desc(policyDocs.publishedAt));
-        if (input.category) return rows.filter(r => r.category === input.category);
-        return rows;
+        const sb = getSupabase();
+        if (!sb) return [];
+        let q = sb.from("policy_docs").select("*").order("publishedAt", { ascending: false });
+        if (input.category) q = q.eq("category", input.category);
+        const { data } = await q;
+        return data ?? [];
       }),
 
     create: protectedProcedure
-      .input(
-        z.object({
-          title: z.string().min(1),
-          category: z.enum(["심층리포트", "보도자료", "카드뉴스"]),
-          description: z.string().optional(),
-          // 첨부파일 (선택)
-          fileBase64: z.string().optional(),
-          fileName: z.string().optional(),
-          fileMimeType: z.string().optional(),
-        })
-      )
+      .input(z.object({
+        title: z.string().min(1), category: z.enum(["심층리포트", "보도자료", "카드뉴스"]),
+        description: z.string().optional(), fileBase64: z.string().optional(),
+        fileName: z.string().optional(), fileMimeType: z.string().optional(),
+      }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         let fileUrl: string | undefined;
         let fileKey: string | undefined;
-
         if (input.fileBase64 && input.fileName) {
           const buffer = Buffer.from(input.fileBase64, "base64");
           const ext = input.fileName.split(".").pop() ?? "bin";
           const key = `kimkyungsu/policy/${nanoid(12)}.${ext}`;
           const result = await storagePut(key, buffer, input.fileMimeType ?? "application/octet-stream");
-          fileUrl = result.url;
-          fileKey = result.key;
+          fileUrl = result.url; fileKey = result.key;
         }
-
-        await db.insert(policyDocs).values({
-          title: input.title,
-          category: input.category,
-          description: input.description,
-          fileUrl,
-          fileKey,
-          fileName: input.fileName,
-        });
-
+        await sb.from("policy_docs").insert({ title: input.title, category: input.category, description: input.description, fileUrl, fileKey, fileName: input.fileName });
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.delete(policyDocs).where(eq(policyDocs.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("policy_docs").delete().eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 공약 ──────────────────────────────────────────────────────────────────
   pledges: router({
     list: publicProcedure
-      .input(z.object({
-        region: z.string().optional(),
-        category: z.string().optional(),
-      }))
+      .input(z.object({ region: z.string().optional(), category: z.string().optional() }))
       .query(async ({ input }) => {
-        const db = await getDb();
-        if (!db) return [];
-        const rows = await db.select().from(pledges).orderBy(pledges.region, pledges.category);
-        let result = rows;
-        if (input.region) result = result.filter(r => r.region === input.region);
-        if (input.category) result = result.filter(r => r.category === input.category);
-        return result;
+        const sb = getSupabase();
+        if (!sb) return [];
+        let q = sb.from("pledges").select("*").order("region").order("category");
+        if (input.region) q = q.eq("region", input.region);
+        if (input.category) q = q.eq("category", input.category);
+        const { data } = await q;
+        return data ?? [];
       }),
 
     create: adminProcedure
-      .input(z.object({
-        region: z.string().min(1),
-        category: z.string().min(1),
-        title: z.string().min(1),
-        description: z.string().optional(),
-        progress: z.number().min(0).max(100).default(0),
-        status: z.enum(["공약", "추진중", "완료", "보류"]).default("공약"),
-      }))
+      .input(z.object({ region: z.string().min(1), category: z.string().min(1), title: z.string().min(1), description: z.string().optional(), progress: z.number().min(0).max(100).default(0), status: z.enum(["공약", "추진중", "완료", "보류"]).default("공약") }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.insert(pledges).values({ ...input });
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("pledges").insert(input);
         return { success: true };
       }),
 
     update: adminProcedure
-      .input(z.object({
-        id: z.number(),
-        region: z.string().optional(),
-        category: z.string().optional(),
-        title: z.string().optional(),
-        description: z.string().optional(),
-        progress: z.number().min(0).max(100).optional(),
-        status: z.enum(["공약", "추진중", "완료", "보류"]).optional(),
-      }))
+      .input(z.object({ id: z.number(), region: z.string().optional(), category: z.string().optional(), title: z.string().optional(), description: z.string().optional(), progress: z.number().min(0).max(100).optional(), status: z.enum(["공약", "추진중", "완료", "보류"]).optional() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const { id, ...data } = input;
-        await db.update(pledges).set(data).where(eq(pledges.id, id));
+        await sb.from("pledges").update(data).eq("id", id);
         return { success: true };
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
-        await db.delete(pledges).where(eq(pledges.id, input.id));
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
+        await sb.from("pledges").delete().eq("id", input.id);
         return { success: true };
       }),
   }),
 
-  // ─── 관리자 전용 ────────────────────────────────────────────────────────────
   admin: router({
-    /**
-     * 대시보드 통계: 각 테이블 건수 집계
-     */
     stats: adminProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) return { announcements: 0, schedules: 0, proposals: 0, policyDocs: 0, pledges: 0, users: 0 };
-
-      const [annCount] = await db.select({ value: count() }).from(announcements);
-      const [schCount] = await db.select({ value: count() }).from(schedules);
-      const [proCount] = await db.select({ value: count() }).from(citizenProposals);
-      const [polCount] = await db.select({ value: count() }).from(policyDocs);
-      const [plgCount] = await db.select({ value: count() }).from(pledges);
-      const [usrCount] = await db.select({ value: count() }).from(users);
-
-      // 상태별 제안 건수
-      const allProposals = await db.select({ status: citizenProposals.status }).from(citizenProposals);
-      const proposalByStatus = allProposals.reduce((acc, p) => {
+      const sb = getSupabase();
+      if (!sb) return { announcements: 0, schedules: 0, proposals: 0, policyDocs: 0, pledges: 0, users: 0 };
+      const [ann, sch, pro, pol, plg, usr] = await Promise.all([
+        sb.from("announcements").select("id", { count: "exact", head: true }),
+        sb.from("schedules").select("id", { count: "exact", head: true }),
+        sb.from("citizen_proposals").select("id", { count: "exact", head: true }),
+        sb.from("policy_docs").select("id", { count: "exact", head: true }),
+        sb.from("pledges").select("id", { count: "exact", head: true }),
+        sb.from("users").select("id", { count: "exact", head: true }),
+      ]);
+      const { data: allProposals } = await sb.from("citizen_proposals").select("status");
+      const proposalByStatus = (allProposals ?? []).reduce((acc, p) => {
         acc[p.status] = (acc[p.status] ?? 0) + 1;
         return acc;
       }, {} as Record<string, number>);
-
       return {
-        announcements: annCount?.value ?? 0,
-        schedules: schCount?.value ?? 0,
-        proposals: proCount?.value ?? 0,
-        policyDocs: polCount?.value ?? 0,
-        pledges: plgCount?.value ?? 0,
-        users: usrCount?.value ?? 0,
-        proposalByStatus,
+        announcements: ann.count ?? 0, schedules: sch.count ?? 0, proposals: pro.count ?? 0,
+        policyDocs: pol.count ?? 0, pledges: plg.count ?? 0, users: usr.count ?? 0, proposalByStatus,
       };
     }),
 
-    /**
-     * 최근 활동 피드 (공지·제안·자료 최신 5건씩)
-     */
     recentActivity: adminProcedure.query(async () => {
-      const db = await getDb();
-      if (!db) return { recentAnnouncements: [], recentProposals: [], recentPolicyDocs: [] };
-
-      const recentAnnouncements = await db
-        .select()
-        .from(announcements)
-        .orderBy(desc(announcements.createdAt))
-        .limit(5);
-
-      const recentProposals = await db
-        .select()
-        .from(citizenProposals)
-        .orderBy(desc(citizenProposals.createdAt))
-        .limit(5);
-
-      const recentPolicyDocs = await db
-        .select()
-        .from(policyDocs)
-        .orderBy(desc(policyDocs.createdAt))
-        .limit(5);
-
-      return { recentAnnouncements, recentProposals, recentPolicyDocs };
+      const sb = getSupabase();
+      if (!sb) return { recentAnnouncements: [], recentProposals: [], recentPolicyDocs: [] };
+      const [a, p, d] = await Promise.all([
+        sb.from("announcements").select("*").order("createdAt", { ascending: false }).limit(5),
+        sb.from("citizen_proposals").select("*").order("createdAt", { ascending: false }).limit(5),
+        sb.from("policy_docs").select("*").order("createdAt", { ascending: false }).limit(5),
+      ]);
+      return { recentAnnouncements: a.data ?? [], recentProposals: p.data ?? [], recentPolicyDocs: d.data ?? [] };
     }),
 
-    // 공지사항 수정 (관리자 전용)
     updateAnnouncement: adminProcedure
-      .input(z.object({
-        id: z.number(),
-        type: z.enum(["공지", "보도", "일정"]).optional(),
-        title: z.string().optional(),
-        content: z.string().optional(),
-        isNew: z.boolean().optional(),
-      }))
+      .input(z.object({ id: z.number(), type: z.enum(["공지", "보도", "일정"]).optional(), title: z.string().optional(), content: z.string().optional(), isNew: z.boolean().optional() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const { id, ...data } = input;
-        await db.update(announcements).set(data).where(eq(announcements.id, id));
+        await sb.from("announcements").update(data).eq("id", id);
         return { success: true };
       }),
 
-    // 일정 수정 (관리자 전용)
     updateSchedule: adminProcedure
-      .input(z.object({
-        id: z.number(),
-        scheduleDate: z.string().optional(),
-        time: z.string().optional(),
-        label: z.enum(["이동", "행사", "현장", "내부", "회의"]).optional(),
-        title: z.string().optional(),
-        isCurrent: z.boolean().optional(),
-      }))
+      .input(z.object({ id: z.number(), scheduleDate: z.string().optional(), time: z.string().optional(), label: z.enum(["이동", "행사", "현장", "내부", "회의"]).optional(), title: z.string().optional(), isCurrent: z.boolean().optional() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const { id, ...data } = input;
-        await db.update(schedules).set(data).where(eq(schedules.id, id));
+        await sb.from("schedules").update(data).eq("id", id);
         return { success: true };
       }),
 
-    // 정책자료 수정 (관리자 전용)
     updatePolicyDoc: adminProcedure
-      .input(z.object({
-        id: z.number(),
-        title: z.string().optional(),
-        category: z.enum(["심층리포트", "보도자료", "카드뉴스"]).optional(),
-        description: z.string().optional(),
-      }))
+      .input(z.object({ id: z.number(), title: z.string().optional(), category: z.enum(["심층리포트", "보도자료", "카드뉴스"]).optional(), description: z.string().optional() }))
       .mutation(async ({ input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("DB 연결 실패");
+        const sb = getSupabase();
+        if (!sb) throw new Error("DB 연결 실패");
         const { id, ...data } = input;
-        await db.update(policyDocs).set(data).where(eq(policyDocs.id, id));
+        await sb.from("policy_docs").update(data).eq("id", id);
         return { success: true };
       }),
 
-    // ─── 샘플 데이터 시드 (관리자 전용) ────────────────────────────────────────
     seedSampleData: adminProcedure.mutation(async () => {
-      const db = await getDb();
-      if (!db) throw new Error("DB 연결 실패");
-
-      // 현재 건수 확인
-      const [existingPledges] = await db.select({ value: count() }).from(pledges);
-      const [existingAnn] = await db.select({ value: count() }).from(announcements);
-      const [existingSch] = await db.select({ value: count() }).from(schedules);
-      const [existingPol] = await db.select({ value: count() }).from(policyDocs);
-      const [existingProp] = await db.select({ value: count() }).from(citizenProposals);
+      const sb = getSupabase();
+      if (!sb) throw new Error("DB 연결 실패");
 
       const results = { pledges: 0, announcements: 0, schedules: 0, policyDocs: 0, proposals: 0 };
 
-      // ── 공약 샘플 데이터 (기존 없을 때만) ──────────────────────────────────
-      if ((existingPledges?.value ?? 0) === 0) {
-        const samplePledges = [
-          { region: "창원", category: "경제·일자리", title: "창원 방산·우주항공 클러스터 조성", description: "한화에어로스페이스 연계 방산·우주항공 산업단지 조성으로 3,000개 일자리 창출", progress: 0, status: "공약" as const },
-          { region: "진주", category: "우주항공·방산", title: "남해안 우주항공산업 벨트 구축", description: "고흥~여수~하동~사천~진주~창원 남해안권을 대한민국 우주항공산업 수도로 육성", progress: 0, status: "공약" as const },
-          { region: "사천", category: "우주항공·방산", title: "우주항공청 연계 산업 생태계 강화", description: "KAI(한국항공우주산업) 중심 항공산업 매출 80% 경남 집중 강점을 지역 성장 엔진으로 전환", progress: 0, status: "공약" as const },
-          { region: "통영", category: "교통·인프라", title: "서부경남 KTX(남부내륙철도) 조기 완공", description: "2031년 예정된 서부경남 KTX를 이재명 대통령 임기 내 조기 완공. 통영·거제 남해안 관광 대전환", progress: 5, status: "추진중" as const },
-          { region: "거제", category: "경제·일자리", title: "거제 조선업 스마트 혁신 지원", description: "삼성중공업·대우조선해양 연계 스마트 조선 기술 도입으로 조선업 경쟁력 강화 및 일자리 안정화", progress: 0, status: "공약" as const },
-          { region: "김해", category: "교통·인프라", title: "부울경 메가시티 광역교통망 구축", description: "부산·울산·경남 메가시티 연계 광역철도·BRT 구축으로 동부경남 교통 혁신", progress: 0, status: "공약" as const },
-          { region: "양산", category: "복지·의료", title: "동부경남 의료 취약지 해소", description: "양산·밀양 공공의료원 확충 및 원격진료 시스템 구축으로 의료 접근성 강화", progress: 0, status: "공약" as const },
-          { region: "진주", category: "교육·청년", title: "경남 청년 정착 지원 패키지", description: "청년 주거 지원, 취업·창업 생태계 조성, 인구 유출 방지를 위한 종합 청년 정책 백서", progress: 0, status: "공약" as const },
-          { region: "통영", category: "환경·관광", title: "남해안 해양관광 특구 지정", description: "통영·거제·남해 해양 레저·관광 인프라 구축으로 연 500만 관광객 유치", progress: 0, status: "공약" as const },
-          { region: "합천", category: "환경·관광", title: "경남 탄소중립 환경 정책", description: "2030 탄소중립 달성을 위한 재생에너지 확대, 탄소흡수원 보전, 친환경 교통 체계 구축", progress: 0, status: "공약" as const },
-          { region: "함양", category: "농림·수산", title: "서부경남 친환경 농업 단지 조성", description: "스마트팜 기술 도입으로 농가 소득 30% 향상 목표, 청년 농업인 정착 지원", progress: 0, status: "공약" as const },
-          { region: "창원", category: "문화·체육", title: "경남 문화예술 거점 도시 조성", description: "창원 국제음악제 확대, 경남 도립미술관 신설, 지역 문화예술인 지원 강화", progress: 0, status: "공약" as const },
-          { region: "밀양", category: "복지·의료", title: "밀양 공공의료원 설립", description: "의료 취약지 밀양에 공공의료원 신설, 응급의료 체계 강화로 도민 의료 안전망 구축", progress: 0, status: "공약" as const },
-          { region: "고성", category: "환경·관광", title: "고성 공룡세계엑스포 상설화", description: "고성 공룡 화석지 유네스코 세계유산 등재 추진, 공룡테마파크 상설 운영으로 관광 수입 증대", progress: 0, status: "공약" as const },
-          { region: "남해", category: "농림·수산", title: "남해 마늘·유자 특화 산업 육성", description: "남해 특산물 브랜드화 및 온라인 판로 개척, 농가 소득 안정화 지원", progress: 0, status: "공약" as const },
-          { region: "하동", category: "농림·수산", title: "하동 녹차·매실 6차산업 클러스터", description: "하동 녹차·매실 생산부터 가공·관광까지 6차산업 클러스터 조성으로 농가 소득 배증", progress: 0, status: "공약" as const },
-          { region: "산청", category: "복지·의료", title: "산청 한방의료 관광 특구 지정", description: "산청 한방의료 인프라 강화, 한방 의료관광 특구 지정으로 지역 경제 활성화", progress: 0, status: "공약" as const },
-          { region: "거창", category: "교육·청년", title: "거창 교육도시 브랜드 강화", description: "거창 교육 특구 지정, 우수 학교 유치 및 지원 강화로 교육 명품 도시 위상 제고", progress: 0, status: "공약" as const },
-          { region: "창녕", category: "환경·관광", title: "창녕 우포늪 생태관광 활성화", description: "람사르 습지 우포늪 생태 탐방 인프라 확충, 연간 100만 관광객 유치 목표", progress: 0, status: "공약" as const },
-          { region: "함안", category: "문화·체육", title: "함안 아라가야 역사문화 복원", description: "아라가야 왕궁지 발굴·복원 및 역사문화 테마파크 조성으로 역사 관광 거점 육성", progress: 0, status: "공약" as const },
-          { region: "의령", category: "농림·수산", title: "의령 망개떡·한우 특산물 브랜드화", description: "의령 특산물 전국 브랜드화 및 직거래 플랫폼 구축으로 농가 소득 향상", progress: 0, status: "공약" as const },
+      // 공지사항 시드 (기존 데이터 없을 때만)
+      const { count: annCount } = await sb.from("announcements").select("id", { count: "exact", head: true });
+      if (!annCount || annCount === 0) {
+        const announcements = [
+          { type: "공지", title: "김경수 경남도지사 후보, 디지털 상황실 오픈", content: "도민과 함께 만드는 새로운 경남을 위한 디지털 소통 공간을 개설합니다.", isNew: true },
+          { type: "보도", title: "경남 우주항공산업 클러스터 구축 계획 발표", content: "사천·진주를 중심으로 우주항공 산업 생태계를 조성하여 글로벌 경쟁력을 확보합니다.", isNew: true },
+          { type: "공지", title: "도민 제안함 운영 안내", content: "경남도의 정책에 대한 도민 여러분의 의견을 기다립니다. 접수된 제안은 검토 후 정책에 반영됩니다.", isNew: false },
+          { type: "일정", title: "창원 현장 방문 및 지역 간담회 일정", content: "3월 넷째 주 창원 지역 주요 현안 점검 및 주민 간담회를 진행합니다.", isNew: true },
         ];
-        await db.insert(pledges).values(samplePledges);
-        results.pledges = samplePledges.length;
+        await sb.from("announcements").insert(announcements);
+        results.announcements = announcements.length;
       }
 
-      // ── 공지사항 샘플 데이터 (기존 없을 때만) ──────────────────────────────
-      if ((existingAnn?.value ?? 0) === 0) {
-        // 이전 더미 데이터와 동일한 공지사항 내용 (날짜 고정: 2026.03.xx)
-        const sampleAnn = [
-          {
-            type: "공지" as const,
-            title: "3월 17일 예비후보 등록 및 통영 현장 방문 안내",
-            content: "더불어민주당 경남도지사 예비후보로 공식 등록하였습니다. 1호 공약인 서부경남 KTX 조기 완공을 재천명하며, 통영 현장을 직접 방문하여 도민의 샘생을 듣습니다.",
-            isNew: true,
-            publishedAt: new Date("2026-03-17"),
-          },
-          {
-            type: "공지" as const,
-            title: "18개 시·군 공약 DB 최종 확정 발표",
-            content: "경남 18개 시·군 지역별 공약을 최종 확정하여 발표합니다. 세부 공약은 디지털 상황실 공약DB 메뉴에서 확인하실 수 있습니다. 도민 여러분의 많은 관심 부탁드립니다.",
-            isNew: true,
-            publishedAt: new Date("2026-03-15"),
-          },
-          {
-            type: "보도" as const,
-            title: "김경수 후보, 경남 경제 대전환 5대 공약 발표",
-            content: "방산·우주항공 산업 강화, 청년 정착 지원, 의료 취약지 해소, 교통 인프라 확충, 농업 소득 향상 5대 분야 핵심 공약을 발표했습니다.",
-            isNew: false,
-            publishedAt: new Date("2026-03-14"),
-          },
-          {
-            type: "공지" as const,
-            title: "도민 제안함 운영 시작 안내",
-            content: "도민 여러분의 아이디어와 제안을 직접 정책에 반영하는 도민 제안함을 운영합니다. 구체적인 제안일수록 정책에 반영될 가능성이 높습니다. 많은 참여 바랍니다.",
-            isNew: false,
-            publishedAt: new Date("2026-03-12"),
-          },
+      // 일정 시드
+      const { count: schCount } = await sb.from("schedules").select("id", { count: "exact", head: true });
+      if (!schCount || schCount === 0) {
+        const schedules = [
+          { scheduleDate: "2026.03.24", time: "09:00", label: "내부" as const, title: "일일 브리핑 및 전략 회의", isCurrent: false },
+          { scheduleDate: "2026.03.24", time: "10:30", label: "현장" as const, title: "창원 스마트공장 방문", isCurrent: true },
+          { scheduleDate: "2026.03.24", time: "13:00", label: "행사" as const, title: "경남 청년 일자리 포럼 참석", isCurrent: false },
+          { scheduleDate: "2026.03.24", time: "15:00", label: "이동" as const, title: "진주 이동", isCurrent: false },
+          { scheduleDate: "2026.03.24", time: "16:00", label: "현장" as const, title: "진주 혁신도시 현안 점검", isCurrent: false },
+          { scheduleDate: "2026.03.25", time: "09:30", label: "회의" as const, title: "교육·청년 정책 TF 회의", isCurrent: false },
+          { scheduleDate: "2026.03.25", time: "14:00", label: "행사" as const, title: "김해 도민 간담회", isCurrent: false },
+          { scheduleDate: "2026.03.25", time: "17:00", label: "내부" as const, title: "주간 일정 점검 회의", isCurrent: false },
         ];
-        await db.insert(announcements).values(sampleAnn);
-        results.announcements = sampleAnn.length;
+        await sb.from("schedules").insert(schedules);
+        results.schedules = schedules.length;
       }
 
-      // ── 일정 샘플 데이터 (기존 없을 때만) ──────────────────────────────────
-      if ((existingSch?.value ?? 0) === 0) {
-        const today = new Date();
-        const y = today.getFullYear();
-        const m = String(today.getMonth() + 1).padStart(2, "0");
-        const d = String(today.getDate()).padStart(2, "0");
-        const todayStr = `${y}.${m}.${d}`;
-
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yd = String(yesterday.getDate()).padStart(2, "0");
-        const ym = String(yesterday.getMonth() + 1).padStart(2, "0");
-        const yesterdayStr = `${y}.${ym}.${yd}`;
-
-        const sampleSchedules = [
-          { scheduleDate: todayStr, time: "09:00", label: "행사" as const, title: "창원 캠프 출발·전략 회의", isCurrent: false },
-          { scheduleDate: todayStr, time: "10:30", label: "현장" as const, title: "진주 시민 간담회", isCurrent: false },
-          { scheduleDate: todayStr, time: "13:00", label: "현장" as const, title: "통영 현장 방문 (서부경남 KTX 예정지)", isCurrent: true },
-          { scheduleDate: todayStr, time: "15:30", label: "현장" as const, title: "거제 조선소 방문", isCurrent: false },
-          { scheduleDate: todayStr, time: "18:00", label: "내부" as const, title: "캠프 복귀 · 보고", isCurrent: false },
-          { scheduleDate: yesterdayStr, time: "09:00", label: "행사" as const, title: "경남도선거관리위원회 예비후보 등록", isCurrent: false },
-          { scheduleDate: yesterdayStr, time: "11:00", label: "현장" as const, title: "통영 서부경남 KTX 현장 방문", isCurrent: false },
-          { scheduleDate: yesterdayStr, time: "14:00", label: "행사" as const, title: "경남 18개 시군 후보 원팀 선언", isCurrent: false },
+      // 도민 제안 시드
+      const { count: proCount } = await sb.from("citizen_proposals").select("id", { count: "exact", head: true });
+      if (!proCount || proCount === 0) {
+        const proposals = [
+          { name: "김도민", region: "창원", category: "교통·인프라", title: "창원 도시철도 연장 건의", content: "마산-진해 구간까지 도시철도를 연장해주세요.", status: "검토중" as const },
+          { name: "박경남", region: "김해", category: "교육·청년", title: "청년 창업 지원금 확대 요청", content: "초기 창업 자금 지원을 현재 2천만원에서 5천만원으로 확대 요청합니다.", status: "반영" as const },
+          { name: "이하나", region: "통영", category: "환경·관광", title: "한려해상 관광 인프라 개선", content: "통영 한려해상 국립공원 관광 편의시설 확충을 건의합니다.", status: "접수" as const },
+          { name: "정민수", region: "진주", category: "경제·일자리", title: "항공MRO산업 인력양성 제안", content: "사천 항공국가산업단지와 연계한 MRO 전문인력 양성 프로그램을 제안합니다.", status: "검토중" as const },
+          { name: "최서연", region: "양산", category: "복지·의료", title: "농어촌 의료 순환 서비스 요청", content: "의료 접근성이 낮은 농어촌 지역에 이동 진료 서비스를 확대해주세요.", status: "접수" as const },
+          { name: "한우리", region: "거창", category: "농림·수산", title: "스마트팜 보급 확대 건의", content: "고령 농가를 위한 스마트팜 기술 보급 및 교육 지원을 부탁합니다.", status: "반영" as const },
+          { name: "윤경남", region: "거제", category: "문화·체육", title: "거제 해양레저 스포츠 단지 조성", content: "조선업 구조조정 이후 해양레저 관광으로의 전환을 위한 인프라 조성을 건의합니다.", status: "접수" as const },
         ];
-        await db.insert(schedules).values(sampleSchedules);
-        results.schedules = sampleSchedules.length;
+        await sb.from("citizen_proposals").insert(proposals);
+        results.proposals = proposals.length;
       }
 
-      // ── 정책 자료 샘플 데이터 (기존 없을 때만) ──────────────────────────────
-      if ((existingPol?.value ?? 0) === 0) {
-        const samplePolicyDocs = [
-          { title: "경남 경제 대전환 5개년 계획", category: "심층리포트" as const, description: "경남의 경제 구조를 분석하고 향후 5개년간의 발전 방향을 제시합니다. 방산·우주항공 산업 강화, 제조업 혁신, 청년 창업 생태계 조성 등 3대 축을 중심으로 구체적인 실행 계획을 담았습니다." },
-          { title: "경남 교육·청년 정책 백서", category: "심층리포트" as const, description: "경남 청년 인구 유출 원인을 진단하고 교육 인프라 강화, 청년 주거 지원, 취업·창업 생태계 조성을 통한 청년 정착 방안을 제시합니다." },
-          { title: "경남 의료·복지 취약지 해소 방안", category: "심층리포트" as const, description: "경남 내 의료 취약 지역의 현황을 분석하고 공공의료원 확충, 원격진료 시스템 도입, 응급의료 체계 강화 등의 대안을 제시합니다." },
-          { title: "예비후보 등록 및 1호 공약 발표", category: "보도자료" as const, description: "더불어민주당 경남도지사 예비후보 등록 및 민선 7기 1호 공약 서부경남 KTX 조기 완공 재천명." },
-          { title: "남해안 우주항공산업 벨트 구축 발표", category: "보도자료" as const, description: "진주 현장 최고위원회의에서 남해안권 우주항공산업 벨트 구축 공약 발표." },
-          { title: "경남 대전환 핵심 공약 카드뉴스", category: "카드뉴스" as const, description: "김경수 후보의 5대 핵심 공약을 쉽고 간결하게 정리한 카드뉴스입니다." },
-          { title: "외화내빈 경남 경제 진단 카드뉴스", category: "카드뉴스" as const, description: "전국 3위 GRDP이지만 도민 소득은 꼴찌 수준인 경남 경제의 구조적 문제와 해법을 담은 카드뉴스." },
+      // 정책 자료 시드
+      const { count: polCount } = await sb.from("policy_docs").select("id", { count: "exact", head: true });
+      if (!polCount || polCount === 0) {
+        const policyDocs = [
+          { title: "경남 우주항공산업 클러스터 구축 전략", category: "심층리포트" as const, description: "사천·진주 중심 우주항공 산업 생태계 조성 로드맵" },
+          { title: "경남 청년 일자리 종합대책", category: "심층리포트" as const, description: "5년간 청년 5만명 고용 창출을 위한 종합 전략" },
+          { title: "스마트 농업 혁신 방안", category: "보도자료" as const, description: "농업의 디지털 전환을 위한 경남형 스마트팜 보급 계획" },
+          { title: "경남 관광 브랜드 전략", category: "카드뉴스" as const, description: "한려해상·지리산 중심 관광 콘텐츠 개발 방향" },
+          { title: "도민 체감형 교통 혁신안", category: "보도자료" as const, description: "광역 BRT 및 수요응답형 교통 시스템 도입 계획" },
+          { title: "경남 균형발전 로드맵", category: "심층리포트" as const, description: "18개 시군 특성별 균형발전 전략 및 재정 지원 방안" },
+          { title: "김경수의 경남 비전 2030", category: "카드뉴스" as const, description: "7대 핵심 공약 한눈에 보기" },
         ];
-        await db.insert(policyDocs).values(samplePolicyDocs);
-        results.policyDocs = samplePolicyDocs.length;
+        await sb.from("policy_docs").insert(policyDocs);
+        results.policyDocs = policyDocs.length;
       }
 
-      // ── 도민 제안 샘플 데이터 (기존 없을 때만) ──────────────────────────────
-      if ((existingProp?.value ?? 0) === 0) {
-        const sampleProposals = [
-          {
-            name: "창원시민 박지훈",
-            email: "jihoon@example.com",
-            category: "교통·인프라",
-            title: "창원~진주 광역버스 노선 확대 요청",
-            content: "창원에서 진주로 출퇴근하는 직장인이 많은데 광역버스 배차 간격이 너무 길어 불편합니다. 출퇴근 시간대 배차를 30분에서 15분으로 줄여주시면 좋겠습니다.",
-            status: "검토중" as const,
-            createdAt: new Date("2026-03-16"),
-          },
-          {
-            name: "진주 청년 이수민",
-            email: "sumin@example.com",
-            category: "청년·일자리",
-            title: "경남 청년 창업 지원센터 진주 유치 건의",
-            content: "서울·부산에 집중된 창업 지원 인프라를 경남에도 유치해 주세요. 진주 혁신도시 내 청년 창업 지원센터를 설립하면 청년 인구 유출을 막을 수 있을 것 같습니다.",
-            status: "반영" as const,
-            createdAt: new Date("2026-03-14"),
-          },
-          {
-            name: "통영 어민 김대성",
-            email: "daesung@example.com",
-            category: "농림·수산",
-            title: "통영 굴 양식장 환경 개선 지원 요청",
-            content: "기후변화로 인해 굴 폐사율이 매년 높아지고 있습니다. 수온 모니터링 시스템 설치와 친환경 양식 기술 보급 지원이 절실합니다. 어민 생계가 달린 문제입니다.",
-            status: "접수" as const,
-            createdAt: new Date("2026-03-15"),
-          },
-          {
-            name: "거제 학부모 최은정",
-            email: "eunjung@example.com",
-            category: "교육·청년",
-            title: "거제 도서지역 학교 통학버스 지원 확대",
-            content: "거제 외곽 도서지역 아이들이 학교까지 이동하는 데 큰 어려움을 겪고 있습니다. 통학버스 노선을 늘리고 운행 횟수를 늘려주시면 교육 기회 불평등을 해소할 수 있습니다.",
-            status: "검토중" as const,
-            createdAt: new Date("2026-03-13"),
-          },
-          {
-            name: "밀양 농민 이철수",
-            email: "chulsoo@example.com",
-            category: "농림·수산",
-            title: "밀양 딸기 스마트팜 단지 조성 제안",
-            content: "밀양은 딸기 재배 최적지임에도 시설이 노후화되어 경쟁력이 떨어지고 있습니다. 스마트팜 전환 지원금과 기술 교육을 제공해 주시면 농가 소득을 크게 높일 수 있을 것입니다.",
-            status: "접수" as const,
-            createdAt: new Date("2026-03-12"),
-          },
-          {
-            name: "사천 주민 정민호",
-            email: "minho@example.com",
-            category: "경제·일자리",
-            title: "사천 항공우주산업 협력 중소기업 지원 강화",
-            content: "KAI 협력 중소기업들이 단가 후려치기와 기술 유출 문제로 어려움을 겪고 있습니다. 공정거래 감시와 중소기업 기술 보호 지원 체계를 강화해 주세요.",
-            status: "보류" as const,
-            createdAt: new Date("2026-03-11"),
-          },
-          {
-            name: "남해 귀농인 한소영",
-            email: "soyoung@example.com",
-            category: "복지·의료",
-            title: "남해 귀농·귀촌인 의료 접근성 개선 요청",
-            content: "남해로 귀농했는데 가까운 병원이 없어 응급 상황에 매우 불안합니다. 순환 진료 버스나 원격진료 시스템을 도입해 주시면 농촌 정착 인구가 늘어날 것 같습니다.",
-            status: "검토중" as const,
-            createdAt: new Date("2026-03-10"),
-          },
+      // 공약 시드 (이미 21건이 있으므로 건너뛰기)
+      const { count: plgCount } = await sb.from("pledges").select("id", { count: "exact", head: true });
+      if (!plgCount || plgCount === 0) {
+        const pledges = [
+          { region: "창원", category: "경제·일자리", title: "창원 스마트제조 혁신허브 구축", description: "창원 국가산업단지 스마트공장 전환 지원", progress: 0, status: "공약" as const },
+          { region: "진주", category: "우주항공·방산", title: "항공MRO산업 클러스터 조성", description: "사천 공군기지 연계 민간 항공정비 산업 육성", progress: 0, status: "공약" as const },
+          { region: "김해", category: "교통·인프라", title: "김해 경전철 노선 확장", description: "김해-부산 연결 경전철 노선 확충", progress: 0, status: "공약" as const },
+          { region: "통영", category: "환경·관광", title: "한려해상 생태관광 벨트 조성", description: "해양 생태 자원을 활용한 프리미엄 관광 개발", progress: 0, status: "공약" as const },
+          { region: "양산", category: "복지·의료", title: "경남 권역 공공의료원 설립", description: "양산 부산대병원 연계 공공의료 강화", progress: 0, status: "공약" as const },
+          { region: "거제", category: "경제·일자리", title: "거제 해양플랜트 재도약 프로젝트", description: "조선해양 산업 고도화 및 신사업 전환 지원", progress: 0, status: "공약" as const },
+          { region: "사천", category: "우주항공·방산", title: "우주센터 유치 및 항공우주 R&D 허브", description: "KAI 연계 우주발사체 시험장 및 연구단지 조성", progress: 0, status: "공약" as const },
+          { region: "밀양", category: "농림·수산", title: "경남 스마트팜 혁신밸리 확대", description: "밀양 스마트팜 혁신밸리 2단계 확장", progress: 0, status: "공약" as const },
+          { region: "거창", category: "교육·청년", title: "경남 청년 도전 지원센터 설립", description: "청년 창업·취업 원스톱 지원 허브", progress: 0, status: "공약" as const },
+          { region: "함양", category: "환경·관광", title: "지리산권 웰니스 관광특구 지정", description: "지리산 생태자원 활용 힐링·웰니스 관광 개발", progress: 0, status: "공약" as const },
+          { region: "남해", category: "농림·수산", title: "남해 수산물 프리미엄 브랜드화", description: "남해안 수산물 가공·유통 혁신 및 수출 지원", progress: 0, status: "공약" as const },
+          { region: "하동", category: "문화·체육", title: "섬진강 문화관광 벨트 조성", description: "하동 녹차·섬진강 테마 문화관광 콘텐츠 개발", progress: 0, status: "공약" as const },
+          { region: "산청", category: "복지·의료", title: "한방바이오 산업 클러스터 육성", description: "산청 한방약초 자원 활용 바이오 헬스케어 산업 육성", progress: 0, status: "공약" as const },
+          { region: "합천", category: "문화·체육", title: "합천 영상테마파크 확장", description: "K-콘텐츠 촬영 인프라 확대 및 관광 연계", progress: 0, status: "공약" as const },
+          { region: "의령", category: "농림·수산", title: "의령 친환경 농업특구 조성", description: "유기농·친환경 농산물 생산·유통 기반 구축", progress: 0, status: "공약" as const },
+          { region: "함안", category: "교통·인프라", title: "경남 내륙 물류허브 구축", description: "함안 교통 요충지 활용 스마트 물류센터 조성", progress: 0, status: "공약" as const },
+          { region: "창녕", category: "환경·관광", title: "우포늪 생태관광 세계화", description: "람사르 습지 우포늪 국제 생태관광지 조성", progress: 0, status: "공약" as const },
+          { region: "고성", category: "환경·관광", title: "공룡세계엑스포 상설화", description: "고성 공룡 자원 활용 상설 테마파크 조성", progress: 0, status: "공약" as const },
+          { region: "창원", category: "교육·청년", title: "경남 AI·SW 인재양성센터", description: "경남대·창원대 연계 AI 전문인력 양성 프로그램", progress: 0, status: "공약" as const },
+          { region: "김해", category: "복지·의료", title: "김해 어린이 전문병원 설립", description: "경남 최초 공공 어린이 전문 의료기관 설립", progress: 0, status: "공약" as const },
+          { region: "진주", category: "교육·청년", title: "진주 혁신도시 2단계 활성화", description: "공공기관 추가 이전 및 혁신도시 정주여건 개선", progress: 0, status: "공약" as const },
         ];
-        await db.insert(citizenProposals).values(sampleProposals);
-        results.proposals = sampleProposals.length;
+        await sb.from("pledges").insert(pledges);
+        results.pledges = pledges.length;
       }
 
       return { success: true, results };
