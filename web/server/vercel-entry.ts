@@ -1,13 +1,14 @@
 /**
  * Vercel Serverless Function 진입점
  * Express 앱을 serverless function으로 래핑
+ *
+ * 이 파일은 esbuild로 완전 번들링되어 api/index.mjs로 출력됨
  */
-import "dotenv/config";
 import express from "express";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { appRouter } from "../web/server/routers";
-import { createContext } from "../web/server/_core/context";
-import { registerOAuthRoutes } from "../web/server/_core/oauth";
+import { appRouter } from "./routers";
+import { createContext } from "./_core/context";
+import { registerOAuthRoutes } from "./_core/oauth";
 
 const app = express();
 
