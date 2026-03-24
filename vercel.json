@@ -3,7 +3,7 @@
   "version": 2,
   "buildCommand": "cd web && pnpm run build:vercel",
   "outputDirectory": "web/dist/public",
-  "installCommand": "cd web && pnpm install",
+  "installCommand": "corepack enable && cd web && pnpm install",
   "framework": null,
   "functions": {
     "api/index.ts": {
