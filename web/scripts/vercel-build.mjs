@@ -36,6 +36,7 @@ execSync(
     "--format=esm",
     `--outfile=${join(funcDir, "index.mjs")}`,
     "--alias:@shared=./shared",
+    `--banner:js="import { createRequire } from 'module'; const require = createRequire(import.meta.url);"`,
   ].join(" "),
   { cwd: WEB, stdio: "inherit" }
 );
