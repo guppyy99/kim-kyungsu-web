@@ -1,12 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "buildCommand": "cd web && pnpm run build:vercel",
-  "outputDirectory": "web/dist/public",
-  "installCommand": "cd web && pnpm install",
+  "rootDirectory": "web",
+  "buildCommand": "pnpm run build:vercel",
+  "outputDirectory": "dist/public",
+  "installCommand": "pnpm install",
   "framework": null,
   "functions": {
-    "web/api/index.ts": {
+    "api/index.ts": {
       "memory": 1024,
       "maxDuration": 30
     }
