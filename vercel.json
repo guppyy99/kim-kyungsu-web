@@ -6,10 +6,9 @@
   "installCommand": "cd web && npm install --legacy-peer-deps",
   "framework": null,
   "functions": {
-    "api/index.ts": {
+    "api/index.mjs": {
       "memory": 1024,
-      "maxDuration": 30,
-      "includeFiles": "web/**"
+      "maxDuration": 30
     }
   },
   "rewrites": [
